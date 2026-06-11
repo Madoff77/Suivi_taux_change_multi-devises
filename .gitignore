@@ -1,0 +1,12 @@
+# Airflow runtime
+logs/
+*.pyc
+__pycache__/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Claude
+.claude/

@@ -1,0 +1,160 @@
+# =============================================================================
+# docker-compose.yaml
+# Stack pedagogique : Airflow (LocalExecutor) + PostgreSQL metier + Metabase
+#
+# Services :
+#   - postgres-airflow   : base de metadonnees Airflow
+#   - airflow-init       : migration de la base + creation de l'utilisateur admin
+#   - airflow-webserver  : UI Airflow            -> http://localhost:8080
+#   - airflow-scheduler  : ordonnanceur
+#   - postgres-exchange  : base metier des taux  (init via sql/init_db.sql)
+#   - metabase           : visualisation des KPI -> http://localhost:3000
+#
+# La connexion Airflow `exchange_postgres` et les Variables metier sont
+# injectees automatiquement via les variables d'environnement (voir .env).
+# =============================================================================
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.3-python3.11
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # ---- Connexion metier (Connection ID : exchange_postgres) ----
+    AIRFLOW_CONN_EXCHANGE_POSTGRES: ${AIRFLOW_CONN_EXCHANGE_POSTGRES}
+    # ---- Variables Airflow metier ----
+    AIRFLOW_VAR_EXCHANGE_RATE_PAIRS: ${AIRFLOW_VAR_EXCHANGE_RATE_PAIRS}
+    AIRFLOW_VAR_EXCHANGE_RATE_ALERT_THRESHOLD_PCT: ${AIRFLOW_VAR_EXCHANGE_RATE_ALERT_THRESHOLD_PCT}
+    AIRFLOW_VAR_EXCHANGE_RATE_FRESHNESS_THRESHOLD_HOURS: ${AIRFLOW_VAR_EXCHANGE_RATE_FRESHNESS_THRESHOLD_HOURS}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Base de metadonnees Airflow
+  # ---------------------------------------------------------------------------
+  postgres-airflow:
+    image: postgres:15
+    container_name: postgres-airflow
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Initialisation Airflow : migration DB + creation de l'utilisateur admin
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create \
+          --username "${_AIRFLOW_WWW_USER_USERNAME:-airflow}" \
+          --password "${_AIRFLOW_WWW_USER_PASSWORD:-airflow}" \
+          --firstname Admin --lastname User \
+          --role Admin --email admin@example.com || true
+        echo "Initialisation Airflow terminee."
+    restart: on-failure
+
+  # ---------------------------------------------------------------------------
+  # Webserver Airflow (UI)
+  # ---------------------------------------------------------------------------
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Scheduler Airflow
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Base metier des taux de change (init via sql/init_db.sql)
+  # ---------------------------------------------------------------------------
+  postgres-exchange:
+    image: postgres:15
+    container_name: postgres-exchange
+    environment:
+      POSTGRES_USER: exchange
+      POSTGRES_PASSWORD: exchange
+      POSTGRES_DB: exchange_rates
+    ports:
+      - "5433:5432"   # expose en 5433 pour ne pas entrer en conflit local
+    volumes:
+      - postgres-exchange-data:/var/lib/postgresql/data
+      - ./sql/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "exchange", "-d", "exchange_rates"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Metabase (visualisation des KPI)
+  # ---------------------------------------------------------------------------
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_TYPE: h2
+    volumes:
+      - metabase-data:/metabase-data
+    depends_on:
+      postgres-exchange:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-airflow-data:
+  postgres-exchange-data:
+  metabase-data:

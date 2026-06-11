@@ -1,0 +1,16 @@
+# =============================================================================
+# requirements.txt
+#
+# L'image officielle apache/airflow:2.9.3-python3.11 embarque deja :
+#   - apache-airflow-providers-postgres (PostgresHook + psycopg2)
+#   - requests (appel HTTP a l'API Frankfurter)
+#   - pendulum (gestion des dates Airflow)
+#
+# Aucune dependance supplementaire n'est donc necessaire pour faire tourner
+# le pipeline. Ce fichier liste les paquets utilises a titre documentaire ;
+# si vous executez le DAG hors de l'image Airflow, installez :
+# =============================================================================
+
+apache-airflow==2.9.3
+apache-airflow-providers-postgres>=5.10.0
+requests>=2.31.0
